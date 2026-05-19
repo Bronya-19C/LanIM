@@ -1,0 +1,27 @@
+# IntelliJ / IDEA
+.idea/
+*.iml
+out/
+
+# Build
+target/
+build/
+*.class
+
+# JavaFX cache (if any tooling creates it)
+.javafx/
+
+# Local data (per README — do not commit DB or received files)
+data/
+*.db
+
+# Logs / OS junk
+*.log
+Thumbs.db
+Desktop.ini
+
+# Maven (uncomment when you add pom.xml)
+# dependency-reduced-pom.xml
+
+# Gradle (uncomment when you use Gradle)
+# .gradle/
