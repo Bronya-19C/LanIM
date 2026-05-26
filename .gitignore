@@ -1,0 +1,22 @@
+# Build
+/build/
+/.gradle/
+/gradle/wrapper/gradle-wrapper.jar
+
+# IDE
+/.idea/
+*.iml
+
+# Data (generated at runtime)
+*.db
+/data/
+/config/keystore.jks
+/config/trusted_peers.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp / junk
+proc*.txt
+新建 文本文档.txt
