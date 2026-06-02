@@ -3,6 +3,7 @@ package com.alpha.lanim.bll;
 import com.alpha.lanim.model.Peer;
 import com.alpha.lanim.util.Constants;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.util.HashMap;
 import java.util.Map;
 import javax.jmdns.JmDNS;
@@ -13,16 +14,18 @@ import javax.jmdns.ServiceListener;
 public class MdnsDiscoveryService {
 
     private final PeerService peerService;
+    private final InetAddress localAddress;
     private JmDNS jmdns;
     private ServiceInfo ownService;
     private volatile boolean running;
 
-    public MdnsDiscoveryService(PeerService peerService) {
+    public MdnsDiscoveryService(PeerService peerService, InetAddress localAddress) {
         this.peerService = peerService;
+        this.localAddress = localAddress;
     }
 
     public void start(int tcpPort) throws IOException {
-        jmdns = JmDNS.create();
+        jmdns = JmDNS.create(localAddress);
         running = true;
 
         Map<String, String> props = new HashMap<>();

@@ -11,6 +11,10 @@ import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.scene.control.Alert;
 import javafx.stage.Stage;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.util.Collections;
 
 public class Launcher extends Application {
 
@@ -59,7 +63,8 @@ public class Launcher extends Application {
 
                 // Phase 2: Start network
                 int port = connectionManager.startServer();
-                peerService.init(nickname, roomId, "127.0.0.1", port);
+                InetAddress localAddress = findLocalAddress();
+                peerService.init(nickname, roomId, localAddress.getHostAddress(), port);
 
                 // Phase 3: Wire cross-dependencies
                 tcpChatService = new TcpChatService(connectionManager, messageService);
@@ -74,7 +79,7 @@ public class Launcher extends Application {
                 messageService.initHandlers();
 
                 // Phase 5: Start discovery and sync
-                mdnsDiscoveryService = new MdnsDiscoveryService(peerService);
+                mdnsDiscoveryService = new MdnsDiscoveryService(peerService, localAddress);
                 mdnsDiscoveryService.start(port);
                 syncService.start();
 
@@ -103,6 +108,24 @@ public class Launcher extends Application {
         primaryStage.setScene(controller.createScene(primaryStage));
         primaryStage.setOnCloseRequest(e -> shutdown());
         primaryStage.show();
+    }
+
+    private InetAddress findLocalAddress() throws Exception {
+        InetAddress fallback = InetAddress.getLocalHost();
+        for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+            if (!ni.isUp() || ni.isLoopback() || ni.isVirtual()) {
+                continue;
+            }
+            for (InetAddress address : Collections.list(ni.getInetAddresses())) {
+                if (address.isLoopbackAddress() || address.isLinkLocalAddress() || address.isMulticastAddress()) {
+                    continue;
+                }
+                if (address instanceof Inet4Address) {
+                    return address;
+                }
+            }
+        }
+        return fallback;
     }
 
     private void shutdown() {
