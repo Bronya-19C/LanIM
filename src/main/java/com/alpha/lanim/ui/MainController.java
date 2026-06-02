@@ -16,7 +16,9 @@ import javafx.scene.control.*;
 import javafx.scene.layout.*;
 import javafx.stage.Stage;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
 
@@ -35,6 +37,7 @@ public class MainController {
     private Label peerLabel;
     private TextField messageField;
     private final ObservableList<Envelope> messageHistory;
+    private final Set<String> displayedMessageIds;
 
     public MainController(PeerService peerService, TcpChatService tcpChatService,
                           SyncService syncService, FileTransferService fileTransferService,
@@ -47,6 +50,7 @@ public class MainController {
         this.roomId = roomId;
         this.messageDao = new MessageDao();
         this.messageHistory = FXCollections.observableArrayList();
+        this.displayedMessageIds = new HashSet<>();
 
         loadMessageHistory();
     }
@@ -54,6 +58,11 @@ public class MainController {
     private void loadMessageHistory() {
         List<Envelope> history = messageDao.findByRoomId(roomId);
         messageHistory.addAll(history);
+        for (Envelope env : history) {
+            if (env.getMessageId() != null) {
+                displayedMessageIds.add(env.getMessageId());
+            }
+        }
     }
 
     public Scene createScene(Stage stage) {
@@ -115,6 +124,11 @@ public class MainController {
 
         // Register TcpChatService callback for incoming messages
         tcpChatService.setMessageCallback(this::onIncomingMessage);
+        syncService.setSyncListener(messages -> {
+            for (Envelope env : messages) {
+                onIncomingMessage(env);
+            }
+        });
 
         // Start peer list update timer
         startPeerUpdateTimer();
@@ -186,6 +200,10 @@ public class MainController {
 
     private void addMessageToView(Envelope envelope) {
         Platform.runLater(() -> {
+            if (envelope.getMessageId() != null && !displayedMessageIds.add(envelope.getMessageId())) {
+                return;
+            }
+
             String type = envelope.getType();
             if (type == null) return;
 

@@ -42,14 +42,12 @@ public class MdnsDiscoveryService {
         jmdns.addServiceListener(Constants.MDNS_SERVICE_TYPE, new ServiceListener() {
             @Override
             public void serviceAdded(ServiceEvent event) {
-                jmdns.requestServiceInfo(Constants.MDNS_SERVICE_TYPE, event.getName());
+                jmdns.requestServiceInfo(event.getType(), event.getName());
             }
 
             @Override
             public void serviceRemoved(ServiceEvent event) {
-                String peerId = event.getInfo() != null
-                        ? event.getInfo().getPropertyString(Constants.TXT_ROOM_ID)
-                        : null;
+                String peerId = parsePeerIdFromServiceName(event.getName());
                 if (peerId != null) {
                     peerService.removeRemotePeer(peerId);
                 }
@@ -57,38 +55,46 @@ public class MdnsDiscoveryService {
 
             @Override
             public void serviceResolved(ServiceEvent event) {
-                ServiceInfo info = event.getInfo();
-                if (info == null) return;
-
-                String roomId = info.getPropertyString(Constants.TXT_ROOM_ID);
-                if (roomId == null || !roomId.equals(peerService.getRoomId())) {
-                    return;
+                if (event.getInfo() != null) {
+                    registerPeerFromService(event.getInfo(), event.getName());
                 }
-
-                String nickname = info.getPropertyString(Constants.TXT_NICKNAME);
-                String address = info.getInetAddresses().length > 0
-                        ? info.getInetAddresses()[0].getHostAddress()
-                        : info.getHostAddress();
-                int port = info.getPort();
-
-                String peerId = event.getName();
-                if (peerId == null || peerId.equals("LANIM-" + peerService.getLocalPeerId())) {
-                    return;
-                }
-
-                // Extract actual peerId from service name "LANIM-<peerId>"
-                if (peerId.startsWith("LANIM-")) {
-                    peerId = peerId.substring(6);
-                }
-
-                Peer peer = new Peer(peerId, nickname, address, port);
-                peer.setLastSeen(System.currentTimeMillis());
-                peerService.addRemotePeer(peer);
             }
         });
 
-        // Browse for existing services
-        jmdns.requestServiceInfo(Constants.MDNS_SERVICE_TYPE, null);
+        for (ServiceInfo info : jmdns.list(Constants.MDNS_SERVICE_TYPE)) {
+            if (info != null && info.getName() != null) {
+                jmdns.requestServiceInfo(info.getType(), info.getName());
+            }
+        }
+    }
+
+    private void registerPeerFromService(ServiceInfo info, String serviceName) {
+        String roomId = info.getPropertyString(Constants.TXT_ROOM_ID);
+        if (roomId == null || !roomId.equals(peerService.getRoomId())) {
+            return;
+        }
+
+        String peerId = parsePeerIdFromServiceName(serviceName);
+        if (peerId == null || peerId.equals(peerService.getLocalPeerId())) {
+            return;
+        }
+
+        String nickname = info.getPropertyString(Constants.TXT_NICKNAME);
+        String address = info.getInetAddresses().length > 0
+                ? info.getInetAddresses()[0].getHostAddress()
+                : info.getHostAddress();
+        int port = info.getPort();
+
+        Peer peer = new Peer(peerId, nickname, address, port);
+        peer.setLastSeen(System.currentTimeMillis());
+        peerService.addRemotePeer(peer);
+    }
+
+    private static String parsePeerIdFromServiceName(String serviceName) {
+        if (serviceName == null || !serviceName.startsWith("LANIM-")) {
+            return null;
+        }
+        return serviceName.substring(6);
     }
 
     public void stop() {

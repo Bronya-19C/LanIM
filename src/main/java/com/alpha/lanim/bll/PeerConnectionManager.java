@@ -16,7 +16,7 @@ import java.util.concurrent.Executors;
 public class PeerConnectionManager {
 
     public interface MessageHandler {
-        void onMessage(String peerId, byte[] data);
+        void onMessage(String peerId, byte[] data, DuplexTransport transport);
     }
 
     private final CertManager certManager;
@@ -95,7 +95,7 @@ public class PeerConnectionManager {
                     byte[] data = transport.receive();
                     String senderId = peerId;
                     if (messageHandler != null) {
-                        messageHandler.onMessage(senderId != null ? senderId : "", data);
+                        messageHandler.onMessage(senderId != null ? senderId : "", data, transport);
                     }
                 } catch (IOException e) {
                     break;
@@ -138,6 +138,15 @@ public class PeerConnectionManager {
         }
         if (transport != null) {
             transport.close();
+        }
+    }
+
+    public void bindTransportIfAbsent(String peerId, DuplexTransport transport) {
+        if (peerId == null || peerId.isEmpty() || transport == null) {
+            return;
+        }
+        synchronized (lock) {
+            transports.putIfAbsent(peerId, transport);
         }
     }
 

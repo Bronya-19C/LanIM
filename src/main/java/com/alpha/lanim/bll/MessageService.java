@@ -58,12 +58,12 @@ public class MessageService {
     }
 
     private void handleChatText(Envelope env) {
-        syncService.recordOutgoingMessage(env);
+        syncService.recordIncomingMessage(env);
     }
 
     private void handleFileMeta(Envelope env) {
         fileTransferService.handleFileMeta(env);
-        syncService.recordOutgoingMessage(env);
+        syncService.recordIncomingMessage(env);
     }
 
     private void handleFileChunk(Envelope env) {

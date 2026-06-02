@@ -1,9 +1,9 @@
 package com.alpha.lanim.bll;
 
+import com.alpha.lanim.bll.transport.DuplexTransport;
 import com.alpha.lanim.model.Envelope;
 import com.alpha.lanim.util.JsonUtil;
-import java.io.*;
-import java.nio.charset.StandardCharsets;
+import java.io.IOException;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -23,13 +23,16 @@ public class TcpChatService {
         this.messageService = messageService;
         this.pendingPeerIds = new ConcurrentHashMap<>();
 
-        this.connectionManager.setMessageHandler((peerId, data) -> {
+        this.connectionManager.setMessageHandler((peerId, data, transport) -> {
             try {
                 Envelope envelope = JsonUtil.fromJson(data, Envelope.class);
                 if (envelope.getSenderId() == null) return;
 
                 if (peerId == null || peerId.isEmpty()) {
                     peerId = envelope.getSenderId();
+                }
+                if (transport != null && peerId != null && !peerId.isEmpty()) {
+                    connectionManager.bindTransportIfAbsent(peerId, transport);
                 }
                 pendingPeerIds.putIfAbsent(peerId, peerId);
 
@@ -58,20 +61,14 @@ public class TcpChatService {
 
     public void sendToPeer(String peerId, Envelope envelope) {
         try {
-            byte[] data = JsonUtil.toJsonBytes(envelope);
-            connectionManager.sendToPeer(peerId, frameMessage(data));
+            connectionManager.sendToPeer(peerId, JsonUtil.toJsonBytes(envelope));
         } catch (IOException e) {
             System.err.println("Failed to send to " + peerId + ": " + e.getMessage());
         }
     }
 
     public void broadcast(Envelope envelope) {
-        try {
-            byte[] data = JsonUtil.toJsonBytes(envelope);
-            connectionManager.broadcast(frameMessage(data));
-        } catch (IOException e) {
-            System.err.println("Failed to broadcast: " + e.getMessage());
-        }
+        connectionManager.broadcast(JsonUtil.toJsonBytes(envelope));
     }
 
     public boolean isConnected(String peerId) {
@@ -88,13 +85,5 @@ public class TcpChatService {
 
     public void shutdown() {
         connectionManager.shutdown();
-    }
-
-    private byte[] frameMessage(byte[] payload) throws IOException {
-        ByteArrayOutputStream bos = new ByteArrayOutputStream();
-        DataOutputStream dos = new DataOutputStream(bos);
-        dos.writeInt(payload.length);
-        dos.write(payload);
-        return bos.toByteArray();
     }
 }

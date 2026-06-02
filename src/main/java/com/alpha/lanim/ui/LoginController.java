@@ -51,7 +51,7 @@ public class LoginController {
 
         connectButton.setOnAction(e -> {
             String nickname = nicknameField.getText().trim();
-            String roomSecret = roomField.getText();
+            String roomSecret = roomField.getText().trim();
             boolean useTls = tlsCheckbox.isSelected();
 
             String error = Validator.validateNickname(nickname);

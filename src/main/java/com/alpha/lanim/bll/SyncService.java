@@ -13,9 +13,14 @@ import java.util.concurrent.TimeUnit;
 
 public class SyncService {
 
+    public interface SyncListener {
+        void onMessagesSynced(List<Envelope> messages);
+    }
+
     private final PeerService peerService;
     private final MessageDao messageDao;
     private TcpChatService tcpChatService;
+    private SyncListener syncListener;
     private final ScheduledExecutorService scheduler;
     private final Map<String, Integer> lastSeenFromPeer;
     private final Object seqLock = new Object();
@@ -37,6 +42,10 @@ public class SyncService {
 
     public void setTcpChatService(TcpChatService tcpChatService) {
         this.tcpChatService = tcpChatService;
+    }
+
+    public void setSyncListener(SyncListener syncListener) {
+        this.syncListener = syncListener;
     }
 
     public void init() {
@@ -91,22 +100,24 @@ public class SyncService {
     public void handleSyncRequest(Envelope request) {
         SyncReqPayload payload = JsonUtil.fromPayload(request.getPayload(), SyncReqPayload.class);
         Map<String, Integer> theirLastSeen = payload.getLastSequences();
-
-        List<Envelope> unseen = new ArrayList<>();
-        String roomId = peerService.getRoomId();
-
-        for (Map.Entry<String, Integer> entry : theirLastSeen.entrySet()) {
-            String senderId = entry.getKey();
-            int since = entry.getValue();
-            List<Envelope> msgs = messageDao.findBySenderAfter(roomId, senderId, since);
-            unseen.addAll(msgs);
+        if (theirLastSeen == null) {
+            theirLastSeen = Collections.emptyMap();
         }
 
-        // Also send our own messages they haven't seen
-        int mySince = theirLastSeen.getOrDefault(peerService.getLocalPeerId(), -1);
-        unseen.addAll(messageDao.findBySenderAfter(roomId, peerService.getLocalPeerId(), mySince));
+        String roomId = peerService.getRoomId();
+        Set<String> senderIds = new LinkedHashSet<>(messageDao.findDistinctSenderIds(roomId));
+        senderIds.addAll(theirLastSeen.keySet());
+        senderIds.add(peerService.getLocalPeerId());
 
-        SyncRespPayload respPayload = new SyncRespPayload(unseen);
+        Map<String, Envelope> unseenById = new LinkedHashMap<>();
+        for (String senderId : senderIds) {
+            int since = theirLastSeen.getOrDefault(senderId, -1);
+            for (Envelope msg : messageDao.findBySenderAfter(roomId, senderId, since)) {
+                unseenById.putIfAbsent(msg.getMessageId(), msg);
+            }
+        }
+
+        SyncRespPayload respPayload = new SyncRespPayload(new ArrayList<>(unseenById.values()));
         Envelope response = new Envelope(
                 MessageType.SYNC_RESP.name(),
                 UUID.randomUUID().toString(),
@@ -122,15 +133,27 @@ public class SyncService {
 
     public void handleSyncResponse(Envelope response) {
         SyncRespPayload payload = JsonUtil.fromPayload(response.getPayload(), SyncRespPayload.class);
-        if (payload.getMessages() != null) {
-            for (Envelope msg : payload.getMessages()) {
-                messageDao.insert(msg);
-                // Update waterline
-                Integer current = lastSeenFromPeer.getOrDefault(msg.getSenderId(), -1);
-                if (msg.getSequence() > current) {
-                    lastSeenFromPeer.put(msg.getSenderId(), msg.getSequence());
-                }
+        if (payload.getMessages() == null || payload.getMessages().isEmpty()) {
+            return;
+        }
+
+        List<Envelope> newlySynced = new ArrayList<>();
+        for (Envelope msg : payload.getMessages()) {
+            if (msg.getMessageId() == null) {
+                continue;
             }
+            messageDao.insert(msg);
+            Integer current = lastSeenFromPeer.getOrDefault(msg.getSenderId(), -1);
+            if (msg.getSequence() > current) {
+                lastSeenFromPeer.put(msg.getSenderId(), msg.getSequence());
+            }
+            if (!msg.getSenderId().equals(peerService.getLocalPeerId())) {
+                newlySynced.add(msg);
+            }
+        }
+
+        if (syncListener != null && !newlySynced.isEmpty()) {
+            syncListener.onMessagesSynced(newlySynced);
         }
     }
 
@@ -142,11 +165,33 @@ public class SyncService {
         }
     }
 
+    /** Persist a message sent by this client and advance the local waterline. */
     public void recordOutgoingMessage(Envelope envelope) {
-        if (envelope.getType().equals(MessageType.CHAT_TEXT.name()) ||
-                envelope.getType().equals(MessageType.FILE_META.name())) {
-            messageDao.insert(envelope);
-            lastSeenFromPeer.put(peerService.getLocalPeerId(), envelope.getSequence());
+        if (!isPersistedChatType(envelope.getType())) {
+            return;
         }
+        messageDao.insert(envelope);
+        lastSeenFromPeer.put(peerService.getLocalPeerId(), envelope.getSequence());
+    }
+
+    /** Persist a message received from a remote peer and advance that sender's waterline. */
+    public void recordIncomingMessage(Envelope envelope) {
+        if (!isPersistedChatType(envelope.getType())) {
+            return;
+        }
+        messageDao.insert(envelope);
+        String senderId = envelope.getSenderId();
+        if (senderId == null) {
+            return;
+        }
+        Integer current = lastSeenFromPeer.getOrDefault(senderId, -1);
+        if (envelope.getSequence() > current) {
+            lastSeenFromPeer.put(senderId, envelope.getSequence());
+        }
+    }
+
+    private static boolean isPersistedChatType(String type) {
+        return MessageType.CHAT_TEXT.name().equals(type)
+                || MessageType.FILE_META.name().equals(type);
     }
 }

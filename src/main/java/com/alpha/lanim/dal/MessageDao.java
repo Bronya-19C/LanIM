@@ -113,6 +113,23 @@ public class MessageDao {
         return getMaxSequence(roomId, senderId) + 1;
     }
 
+    public List<String> findDistinctSenderIds(String roomId) {
+        String sql = "SELECT DISTINCT sender_id FROM messages WHERE room_id = ?";
+        List<String> result = new ArrayList<>();
+        try (Connection conn = DBUtil.getDefaultConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, roomId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    result.add(rs.getString(1));
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to list senders for room: " + roomId, e);
+        }
+        return result;
+    }
+
     private Envelope rowToEnvelope(ResultSet rs) throws SQLException {
         Envelope env = new Envelope();
         env.setMessageId(rs.getString("message_id"));

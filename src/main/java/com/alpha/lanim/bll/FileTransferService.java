@@ -6,21 +6,27 @@ import com.alpha.lanim.util.Constants;
 import com.alpha.lanim.util.JsonUtil;
 import com.google.gson.JsonObject;
 import java.io.*;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.file.*;
 import java.security.MessageDigest;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class FileTransferService {
 
     private final FileDao fileDao;
     private TcpChatService tcpChatService;
+    private SyncService syncService;
     private final PeerService peerService;
     private final String filesPath;
+    private final Map<String, Set<Integer>> receivedChunksByFile;
 
     public FileTransferService(PeerService peerService) {
         this.fileDao = new FileDao();
         this.peerService = peerService;
         this.filesPath = Constants.DEFAULT_FILES_PATH;
+        this.receivedChunksByFile = new ConcurrentHashMap<>();
 
         try { Files.createDirectories(Paths.get(filesPath)); } catch (IOException ignored) {}
     }
@@ -29,7 +35,15 @@ public class FileTransferService {
         this.tcpChatService = tcpChatService;
     }
 
+    public void setSyncService(SyncService syncService) {
+        this.syncService = syncService;
+    }
+
     public void sendFile(String targetPeerId, File file) throws IOException {
+        if (syncService == null) {
+            throw new IllegalStateException("SyncService not configured");
+        }
+
         String fileId = UUID.randomUUID().toString();
         long totalSize = file.length();
         int totalChunks = (int) Math.ceil((double) totalSize / Constants.FILE_CHUNK_SIZE);
@@ -43,16 +57,19 @@ public class FileTransferService {
 
         String messageId = UUID.randomUUID().toString();
         JsonObject payload = JsonUtil.gson().toJsonTree(meta).getAsJsonObject();
+        int seq = syncService.nextSequence();
 
         Envelope envelope = new Envelope(
                 MessageType.FILE_META.name(),
                 messageId,
                 peerService.getLocalPeerId(),
                 peerService.getRoomId(),
-                0,
+                seq,
                 System.currentTimeMillis(),
                 payload
         );
+
+        syncService.recordOutgoingMessage(envelope);
 
         if (targetPeerId != null && !targetPeerId.isEmpty()) {
             tcpChatService.sendToPeer(targetPeerId, envelope);
@@ -106,6 +123,9 @@ public class FileTransferService {
 
         try {
             Files.createDirectories(fileDir);
+            if (Files.notExists(filePath)) {
+                Files.createFile(filePath);
+            }
         } catch (IOException e) {
             System.err.println("Failed to create file directory: " + e.getMessage());
             return;
@@ -123,6 +143,7 @@ public class FileTransferService {
         record.setLocalPath(filePath.toString());
         record.setStatus(FileRecord.STATUS_PENDING);
         fileDao.insert(record);
+        receivedChunksByFile.put(meta.getFileId(), ConcurrentHashMap.newKeySet());
     }
 
     public void handleFileChunk(Envelope envelope) {
@@ -131,14 +152,25 @@ public class FileTransferService {
         FileRecord record = fileDao.findByFileId(chunk.getFileId());
         if (record == null || record.isComplete()) return;
 
+        Set<Integer> received = receivedChunksByFile.computeIfAbsent(
+                chunk.getFileId(), id -> ConcurrentHashMap.newKeySet());
+        if (!received.add(chunk.getChunkIndex())) {
+            return;
+        }
+
         Path filePath = Paths.get(record.getLocalPath());
 
         try {
             byte[] chunkData = Base64.getDecoder().decode(chunk.getData());
-            Files.write(filePath, chunkData,
-                    StandardOpenOption.CREATE, StandardOpenOption.WRITE, StandardOpenOption.APPEND);
+            long offset = (long) chunk.getChunkIndex() * Constants.FILE_CHUNK_SIZE;
 
-            int newReceivedCount = record.getReceivedChunks() + 1;
+            try (FileChannel channel = FileChannel.open(
+                    filePath, StandardOpenOption.CREATE, StandardOpenOption.WRITE)) {
+                channel.position(offset);
+                channel.write(ByteBuffer.wrap(chunkData));
+            }
+
+            int newReceivedCount = received.size();
             String status = newReceivedCount >= record.getTotalChunks()
                     ? FileRecord.STATUS_COMPLETE : FileRecord.STATUS_PENDING;
 
@@ -150,8 +182,10 @@ public class FileTransferService {
                     fileDao.updateChunkReceived(chunk.getFileId(), newReceivedCount, FileRecord.STATUS_ERROR);
                     System.err.println("Checksum mismatch for file: " + record.getFileName());
                 }
+                receivedChunksByFile.remove(chunk.getFileId());
             }
         } catch (IOException e) {
+            received.remove(chunk.getChunkIndex());
             System.err.println("Failed to write file chunk: " + e.getMessage());
         }
     }
@@ -161,7 +195,6 @@ public class FileTransferService {
         List<Integer> missingChunks = ack.getMissingChunks();
         if (missingChunks == null || missingChunks.isEmpty()) return;
 
-        // Re-request or resend logic would go here
         System.out.println("Peer requested missing chunks: " + missingChunks.size());
     }
 

@@ -66,6 +66,7 @@ public class Launcher extends Application {
                 fileTransferService.setTcpChatService(tcpChatService);
                 syncService.setTcpChatService(tcpChatService);
                 syncService.init();
+                fileTransferService.setSyncService(syncService);
 
                 // Phase 4: Wire message service handlers
                 messageService.setSyncService(syncService);
