@@ -130,6 +130,23 @@ public class MessageDao {
         return result;
     }
 
+    public int getMaxGlobalSequence(String roomId) {
+        String sql = "SELECT COALESCE(MAX(sequence), -1) FROM messages WHERE room_id = ?";
+
+        try (Connection conn = DBUtil.getDefaultConnection();
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, roomId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getInt(1);
+                }
+            }
+        } catch (SQLException e) {
+            throw new RuntimeException("Failed to get max global sequence", e);
+        }
+        return -1;
+    }
+
     private Envelope rowToEnvelope(ResultSet rs) throws SQLException {
         Envelope env = new Envelope();
         env.setMessageId(rs.getString("message_id"));

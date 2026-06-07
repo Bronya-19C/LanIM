@@ -3,9 +3,7 @@ package com.alpha.lanim.bll;
 import com.alpha.lanim.dal.PeerDao;
 import com.alpha.lanim.model.Peer;
 import com.alpha.lanim.util.Constants;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class PeerService {
@@ -14,9 +12,8 @@ public class PeerService {
     private String localPeerId;
     private String nickname;
     private String roomId;
-    private String address;
-    private int port;
     private final Map<String, Peer> remotePeers;
+    private final List<Runnable> peerChangeListeners;
 
     public PeerService() {
         this.peerDao = new PeerDao();
@@ -24,13 +21,12 @@ public class PeerService {
         this.localPeerId = UUID.randomUUID().toString();
         this.nickname = Constants.DEFAULT_NICKNAME_PREFIX +
                 Integer.toHexString((int) (Math.random() * 0xFFFF)).toUpperCase();
+        this.peerChangeListeners = Collections.synchronizedList(new ArrayList<>());
     }
 
-    public void init(String nickname, String roomId, String address, int port) {
+    public void init(String nickname, String roomId) {
         this.nickname = nickname;
         this.roomId = roomId;
-        this.address = address;
-        this.port = port;
     }
 
     public String getLocalPeerId() { return localPeerId; }
@@ -40,22 +36,22 @@ public class PeerService {
 
     public String getRoomId() { return roomId; }
 
-    public String getAddress() { return address; }
-    public int getPort() { return port; }
-
     public Peer getLocalPeer() {
-        Peer p = new Peer(localPeerId, nickname, address, port);
+        Peer p = new Peer(localPeerId, nickname, "", 0);
         p.setLastSeen(System.currentTimeMillis());
         return p;
     }
 
-    public void addRemotePeer(Peer peer) {
-        remotePeers.put(peer.getPeerId(), peer);
+    public void addRemotePeerById(String peerId, String nickname) {
+        Peer peer = new Peer(peerId, nickname, "", 0);
+        remotePeers.put(peerId, peer);
         peerDao.upsert(peer);
+        notifyPeerChange();
     }
 
     public void removeRemotePeer(String peerId) {
         remotePeers.remove(peerId);
+        notifyPeerChange();
     }
 
     public Peer getRemotePeer(String peerId) {
@@ -72,5 +68,15 @@ public class PeerService {
 
     public boolean hasRemotePeer(String peerId) {
         return remotePeers.containsKey(peerId);
+    }
+
+    public void addPeerChangeListener(Runnable listener) {
+        peerChangeListeners.add(listener);
+    }
+
+    private void notifyPeerChange() {
+        for (Runnable listener : peerChangeListeners) {
+            listener.run();
+        }
     }
 }

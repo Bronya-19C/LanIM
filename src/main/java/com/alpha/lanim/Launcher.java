@@ -3,30 +3,27 @@ package com.alpha.lanim;
 import com.alpha.lanim.bll.*;
 import com.alpha.lanim.bll.crypto.CertManager;
 import com.alpha.lanim.dal.DBUtil;
+import com.alpha.lanim.model.*;
 import com.alpha.lanim.ui.LoginController;
 import com.alpha.lanim.ui.MainController;
-import com.alpha.lanim.util.HashUtil;
+import com.alpha.lanim.util.JsonUtil;
 import com.alpha.lanim.util.Constants;
 import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.scene.control.Alert;
 import javafx.stage.Stage;
-import java.net.Inet4Address;
-import java.net.InetAddress;
-import java.net.NetworkInterface;
-import java.util.Collections;
 
 public class Launcher extends Application {
 
     private PeerService peerService;
     private CertManager certManager;
-    private PeerConnectionManager connectionManager;
+    private ClientConnectionService connectionService;
     private TcpChatService tcpChatService;
     private FileTransferService fileTransferService;
-    private SyncService syncService;
     private MessageService messageService;
-    private MdnsDiscoveryService mdnsDiscoveryService;
     private Stage primaryStage;
+    private String serverHost;
+    private int serverPort;
 
     @Override
     public void start(Stage stage) {
@@ -34,7 +31,6 @@ public class Launcher extends Application {
 
         try {
             DBUtil.init();
-
             certManager = new CertManager();
             certManager.init();
         } catch (Exception e) {
@@ -46,52 +42,59 @@ public class Launcher extends Application {
         primaryStage.show();
     }
 
-    private void doConnect(String nickname, String roomSecret, boolean useTls) {
+    private void doConnect(String nickname, String roomSecret, boolean useTls,
+                           String serverAddress) {
         new Thread(() -> {
             try {
-                String roomId = HashUtil.sha512Hex(roomSecret);
+                serverHost = "localhost";
+                serverPort = Constants.DEFAULT_SERVER_PORT;
+                if (serverAddress != null && !serverAddress.trim().isEmpty()) {
+                    String[] parts = serverAddress.trim().split(":");
+                    serverHost = parts[0].trim();
+                    if (parts.length > 1) {
+                        serverPort = Integer.parseInt(parts[1].trim());
+                    }
+                }
+
                 String transportMode = useTls
                         ? Constants.TRANSPORT_MODE_TLS
                         : Constants.TRANSPORT_MODE_PLAIN;
 
-                // Phase 1: Create services without cross-dependencies
                 peerService = new PeerService();
-                connectionManager = new PeerConnectionManager(certManager, transportMode);
                 messageService = new MessageService();
                 fileTransferService = new FileTransferService(peerService);
-                syncService = new SyncService(peerService);
+                connectionService = new ClientConnectionService(certManager, transportMode);
+                tcpChatService = new TcpChatService(connectionService, messageService);
 
-                // Phase 2: Start network
-                int port = connectionManager.startServer();
-                InetAddress localAddress = findLocalAddress();
-                peerService.init(nickname, roomId, localAddress.getHostAddress(), port);
-
-                // Phase 3: Wire cross-dependencies
-                tcpChatService = new TcpChatService(connectionManager, messageService);
-                fileTransferService.setTcpChatService(tcpChatService);
-                syncService.setTcpChatService(tcpChatService);
-                syncService.init();
-                fileTransferService.setSyncService(syncService);
-
-                // Phase 4: Wire message service handlers
-                messageService.setSyncService(syncService);
                 messageService.setFileTransferService(fileTransferService);
-                messageService.initHandlers();
+                fileTransferService.setTcpChatService(tcpChatService);
 
-                // Phase 5: Start discovery and sync
-                mdnsDiscoveryService = new MdnsDiscoveryService(peerService, localAddress);
-                mdnsDiscoveryService.start(port);
-                syncService.start();
+                connectionService.connect(serverHost, serverPort);
 
-                // Phase 6: Show main window
-                Platform.runLater(() -> showMainWindow(roomId));
+                peerService.init(nickname, "");
+
+                JoinPayload joinPayload = new JoinPayload(
+                        peerService.getLocalPeerId(), nickname, roomSecret);
+
+                Envelope joinEnv = new Envelope(
+                        MessageType.JOIN.name(),
+                        java.util.UUID.randomUUID().toString(),
+                        peerService.getLocalPeerId(),
+                        "",
+                        0,
+                        System.currentTimeMillis(),
+                        JsonUtil.gson().toJsonTree(joinPayload).getAsJsonObject()
+                );
+
+                connectionService.send(JsonUtil.toJsonBytes(joinEnv));
+
+                Platform.runLater(() -> showMainWindow());
 
             } catch (Exception e) {
                 Platform.runLater(() -> {
                     Alert alert = new Alert(Alert.AlertType.ERROR,
                             "Connection failed: " + e.getMessage());
                     alert.showAndWait();
-                    // Return to login
                     primaryStage.setScene(LoginController.createScene(
                             primaryStage, this::doConnect));
                     primaryStage.show();
@@ -100,37 +103,17 @@ public class Launcher extends Application {
         }).start();
     }
 
-    private void showMainWindow(String roomId) {
+    private void showMainWindow() {
         MainController controller = new MainController(
-                peerService, tcpChatService, syncService,
-                fileTransferService, certManager, roomId);
+                peerService, tcpChatService, fileTransferService,
+                messageService, certManager);
 
         primaryStage.setScene(controller.createScene(primaryStage));
         primaryStage.setOnCloseRequest(e -> shutdown());
         primaryStage.show();
     }
 
-    private InetAddress findLocalAddress() throws Exception {
-        InetAddress fallback = InetAddress.getLocalHost();
-        for (NetworkInterface ni : Collections.list(NetworkInterface.getNetworkInterfaces())) {
-            if (!ni.isUp() || ni.isLoopback() || ni.isVirtual()) {
-                continue;
-            }
-            for (InetAddress address : Collections.list(ni.getInetAddresses())) {
-                if (address.isLoopbackAddress() || address.isLinkLocalAddress() || address.isMulticastAddress()) {
-                    continue;
-                }
-                if (address instanceof Inet4Address) {
-                    return address;
-                }
-            }
-        }
-        return fallback;
-    }
-
     private void shutdown() {
-        if (mdnsDiscoveryService != null) mdnsDiscoveryService.stop();
-        if (syncService != null) syncService.stop();
         if (tcpChatService != null) tcpChatService.shutdown();
     }
 

@@ -19,18 +19,15 @@ import javafx.stage.Stage;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.Timer;
-import java.util.TimerTask;
 
 public class MainController {
 
     private final PeerService peerService;
     private final TcpChatService tcpChatService;
-    private final SyncService syncService;
     private final FileTransferService fileTransferService;
+    private final MessageService messageService;
     private final MessageDao messageDao;
     private final CertManager certManager;
-    private final String roomId;
 
     private VBox messageContainer;
     private ListView<String> peerListView;
@@ -38,43 +35,30 @@ public class MainController {
     private TextField messageField;
     private final ObservableList<Envelope> messageHistory;
     private final Set<String> displayedMessageIds;
+    private String roomId;
 
     public MainController(PeerService peerService, TcpChatService tcpChatService,
-                          SyncService syncService, FileTransferService fileTransferService,
-                          CertManager certManager, String roomId) {
+                          FileTransferService fileTransferService,
+                          MessageService messageService, CertManager certManager) {
         this.peerService = peerService;
         this.tcpChatService = tcpChatService;
-        this.syncService = syncService;
         this.fileTransferService = fileTransferService;
+        this.messageService = messageService;
         this.certManager = certManager;
-        this.roomId = roomId;
         this.messageDao = new MessageDao();
         this.messageHistory = FXCollections.observableArrayList();
         this.displayedMessageIds = new HashSet<>();
-
-        loadMessageHistory();
-    }
-
-    private void loadMessageHistory() {
-        List<Envelope> history = messageDao.findByRoomId(roomId);
-        messageHistory.addAll(history);
-        for (Envelope env : history) {
-            if (env.getMessageId() != null) {
-                displayedMessageIds.add(env.getMessageId());
-            }
-        }
     }
 
     public Scene createScene(Stage stage) {
-        stage.setTitle("LANIM - " + peerService.getNickname()
-                + " @ " + roomId.substring(0, 8) + "...");
+        stage.setTitle("LANIM - " + peerService.getNickname());
 
         BorderPane root = new BorderPane();
 
         // Left: peer list
         peerListView = new ListView<>();
         peerListView.setPrefWidth(220);
-        peerLabel = new Label("Members (" + (peerService.getRemotePeerCount() + 1) + ")");
+        peerLabel = new Label("Members (1)");
         peerLabel.setStyle("-fx-font-weight: bold; -fx-padding: 5 0 5 0;");
         VBox leftPane = new VBox(5);
         leftPane.setPadding(new Insets(10));
@@ -88,11 +72,6 @@ public class MainController {
         scrollPane.setVbarPolicy(ScrollPane.ScrollBarPolicy.ALWAYS);
         scrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
         VBox.setVgrow(scrollPane, Priority.ALWAYS);
-
-        // Restore message history into UI
-        for (Envelope env : messageHistory) {
-            addMessageToView(env);
-        }
 
         // Bottom: input area
         HBox inputBox = new HBox(10);
@@ -110,36 +89,81 @@ public class MainController {
 
         inputBox.getChildren().addAll(messageField, sendButton, fileButton);
 
-        // Wire up message sending
         Runnable sendMessage = this::sendChatMessage;
         sendButton.setOnAction(e -> sendMessage.run());
         messageField.setOnAction(e -> sendMessage.run());
 
-        // Wire up file sending
         fileButton.setOnAction(e -> sendFile());
 
         root.setLeft(leftPane);
         root.setCenter(scrollPane);
         root.setBottom(inputBox);
 
-        // Register TcpChatService callback for incoming messages
+        // Register message callbacks
         tcpChatService.setMessageCallback(this::onIncomingMessage);
-        syncService.setSyncListener(messages -> {
-            for (Envelope env : messages) {
-                onIncomingMessage(env);
+        messageService.setJoinCallback(this::onJoinAck);
+        messageService.setUserEventCallback(new MessageService.UserEventCallback() {
+            @Override
+            public void onUserJoined(UserEventPayload payload) {
+                Platform.runLater(() -> {
+                    peerService.addRemotePeerById(payload.getPeerId(), payload.getNickname());
+                    refreshPeerList();
+                });
+            }
+
+            @Override
+            public void onUserLeft(UserEventPayload payload) {
+                Platform.runLater(() -> {
+                    peerService.removeRemotePeer(payload.getPeerId());
+                    refreshPeerList();
+                });
             }
         });
-
-        // Start peer list update timer
-        startPeerUpdateTimer();
-
-        // Start auto-connect timer
-        startAutoConnectTimer();
 
         Scene scene = new Scene(root, 850, 600);
         stage.setMinWidth(700);
         stage.setMinHeight(450);
         return scene;
+    }
+
+    private void onJoinAck(JoinAckPayload ack) {
+        Platform.runLater(() -> {
+            this.roomId = ack.getRoomId();
+            stageSetRoomId(roomId);
+
+            // Load members
+            if (ack.getMembers() != null) {
+                for (JoinAckPayload.MemberInfo m : ack.getMembers()) {
+                    if (!m.getPeerId().equals(peerService.getLocalPeerId())) {
+                        peerService.addRemotePeerById(m.getPeerId(), m.getNickname());
+                    }
+                }
+            }
+            refreshPeerList();
+
+            // Load history
+            messageHistory.clear();
+            displayedMessageIds.clear();
+            if (ack.getHistory() != null) {
+                for (Envelope env : ack.getHistory()) {
+                    if (env.getMessageId() != null) {
+                        displayedMessageIds.add(env.getMessageId());
+                    }
+                    messageHistory.add(env);
+                    addMessageToView(env);
+                }
+            }
+        });
+    }
+
+    private void stageSetRoomId(String roomId) {
+        Platform.runLater(() -> {
+            Stage stage = (Stage) messageContainer.getScene().getWindow();
+            if (stage != null) {
+                stage.setTitle("LANIM - " + peerService.getNickname()
+                        + " @ " + roomId.substring(0, Math.min(8, roomId.length())) + "...");
+            }
+        });
     }
 
     private void sendChatMessage() {
@@ -150,22 +174,19 @@ public class MainController {
         messageField.clear();
 
         new Thread(() -> {
-            int seq = syncService.nextSequence();
             ChatPayload payload = new ChatPayload(text);
 
             Envelope envelope = new Envelope(
                     MessageType.CHAT_TEXT.name(),
                     java.util.UUID.randomUUID().toString(),
                     peerService.getLocalPeerId(),
-                    roomId,
-                    seq,
+                    roomId != null ? roomId : "",
+                    0,
                     System.currentTimeMillis(),
                     JsonUtil.gson().toJsonTree(payload).getAsJsonObject()
             );
 
-            syncService.recordOutgoingMessage(envelope);
-            tcpChatService.broadcast(envelope);
-
+            tcpChatService.sendToServer(envelope);
             addMessageToView(envelope);
         }).start();
     }
@@ -175,7 +196,7 @@ public class MainController {
         if (file != null) {
             new Thread(() -> {
                 try {
-                    fileTransferService.sendFile(null, file);
+                    fileTransferService.sendFile(file);
                     Platform.runLater(() -> {
                         Label label = new Label("You sent file: " + file.getName()
                                 + " (" + (file.length() / 1024) + " KB)");
@@ -254,37 +275,14 @@ public class MainController {
         return chooser.showOpenDialog(null);
     }
 
-    private void startPeerUpdateTimer() {
-        Timer timer = new Timer(true);
-        timer.scheduleAtFixedRate(new TimerTask() {
-            @Override
-            public void run() {
-                Platform.runLater(() -> {
-                    peerListView.getItems().clear();
-                    ObservableList<String> items = peerListView.getItems();
-                    items.add(peerService.getNickname() + " (You)");
-                    for (Peer p : peerService.getRemotePeers()) {
-                        String status = tcpChatService.isConnected(p.getPeerId())
-                                ? " [online]" : " [connecting]";
-                        items.add(p.getNickname() + status);
-                    }
-                    peerLabel.setText("Members (" + (peerService.getRemotePeerCount() + 1) + ")");
-                });
-            }
-        }, 0, 1000);
-    }
-
-    private void startAutoConnectTimer() {
-        Timer timer = new Timer(true);
-        timer.scheduleAtFixedRate(new TimerTask() {
-            @Override
-            public void run() {
-                for (Peer p : peerService.getRemotePeers()) {
-                    if (!tcpChatService.isConnected(p.getPeerId())) {
-                        tcpChatService.connectToPeer(p.getPeerId(), p.getAddress(), p.getPort());
-                    }
-                }
-            }
-        }, 2000, 2000);
+    private void refreshPeerList() {
+        if (peerListView == null) return;
+        peerListView.getItems().clear();
+        ObservableList<String> items = peerListView.getItems();
+        items.add(peerService.getNickname() + " (You)");
+        for (Peer p : peerService.getRemotePeers()) {
+            items.add(p.getNickname() + " [online]");
+        }
+        peerLabel.setText("Members (" + (peerService.getRemotePeerCount() + 1) + ")");
     }
 }

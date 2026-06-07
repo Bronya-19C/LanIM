@@ -17,7 +17,6 @@ public class FileTransferService {
 
     private final FileDao fileDao;
     private TcpChatService tcpChatService;
-    private SyncService syncService;
     private final PeerService peerService;
     private final String filesPath;
     private final Map<String, Set<Integer>> receivedChunksByFile;
@@ -35,15 +34,7 @@ public class FileTransferService {
         this.tcpChatService = tcpChatService;
     }
 
-    public void setSyncService(SyncService syncService) {
-        this.syncService = syncService;
-    }
-
-    public void sendFile(String targetPeerId, File file) throws IOException {
-        if (syncService == null) {
-            throw new IllegalStateException("SyncService not configured");
-        }
-
+    public void sendFile(File file) throws IOException {
         String fileId = UUID.randomUUID().toString();
         long totalSize = file.length();
         int totalChunks = (int) Math.ceil((double) totalSize / Constants.FILE_CHUNK_SIZE);
@@ -57,25 +48,18 @@ public class FileTransferService {
 
         String messageId = UUID.randomUUID().toString();
         JsonObject payload = JsonUtil.gson().toJsonTree(meta).getAsJsonObject();
-        int seq = syncService.nextSequence();
 
         Envelope envelope = new Envelope(
                 MessageType.FILE_META.name(),
                 messageId,
                 peerService.getLocalPeerId(),
                 peerService.getRoomId(),
-                seq,
+                0,
                 System.currentTimeMillis(),
                 payload
         );
 
-        syncService.recordOutgoingMessage(envelope);
-
-        if (targetPeerId != null && !targetPeerId.isEmpty()) {
-            tcpChatService.sendToPeer(targetPeerId, envelope);
-        } else {
-            tcpChatService.broadcast(envelope);
-        }
+        tcpChatService.sendToServer(envelope);
 
         try (FileInputStream fis = new FileInputStream(file)) {
             byte[] buffer = new byte[Constants.FILE_CHUNK_SIZE];
@@ -104,11 +88,7 @@ public class FileTransferService {
                         chunkPayload
                 );
 
-                if (targetPeerId != null && !targetPeerId.isEmpty()) {
-                    tcpChatService.sendToPeer(targetPeerId, chunkEnv);
-                } else {
-                    tcpChatService.broadcast(chunkEnv);
-                }
+                tcpChatService.sendToServer(chunkEnv);
 
                 chunkIndex++;
             }

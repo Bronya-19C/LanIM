@@ -1,36 +1,52 @@
 package com.alpha.lanim.bll;
 
-import com.alpha.lanim.model.Envelope;
-import com.alpha.lanim.model.MessageType;
+import com.alpha.lanim.dal.MessageDao;
+import com.alpha.lanim.model.*;
+import com.alpha.lanim.util.JsonUtil;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 
 public class MessageService {
 
+    public interface JoinCallback {
+        void onJoinAck(JoinAckPayload ack);
+    }
+
+    public interface UserEventCallback {
+        void onUserJoined(UserEventPayload payload);
+        void onUserLeft(UserEventPayload payload);
+    }
+
     private final Map<MessageType, Consumer<Envelope>> handlers;
-    private SyncService syncService;
+    private final MessageDao messageDao;
+    private JoinCallback joinCallback;
+    private UserEventCallback userEventCallback;
     private FileTransferService fileTransferService;
 
     public MessageService() {
         this.handlers = new HashMap<>();
+        this.messageDao = new MessageDao();
+        initHandlers();
     }
 
-    public void setSyncService(SyncService syncService) {
-        this.syncService = syncService;
+    public void setJoinCallback(JoinCallback callback) {
+        this.joinCallback = callback;
+    }
+
+    public void setUserEventCallback(UserEventCallback callback) {
+        this.userEventCallback = callback;
     }
 
     public void setFileTransferService(FileTransferService fileTransferService) {
         this.fileTransferService = fileTransferService;
     }
 
-    public void initHandlers() {
-        registerDefaultHandlers();
-    }
-
-    private void registerDefaultHandlers() {
-        handlers.put(MessageType.SYNC_REQ, this::handleSyncReq);
-        handlers.put(MessageType.SYNC_RESP, this::handleSyncResp);
+    private void initHandlers() {
+        handlers.put(MessageType.JOIN_ACK, this::handleJoinAck);
+        handlers.put(MessageType.USER_JOINED, this::handleUserJoined);
+        handlers.put(MessageType.USER_LEFT, this::handleUserLeft);
         handlers.put(MessageType.CHAT_TEXT, this::handleChatText);
         handlers.put(MessageType.FILE_META, this::handleFileMeta);
         handlers.put(MessageType.FILE_CHUNK, this::handleFileChunk);
@@ -39,39 +55,63 @@ public class MessageService {
     }
 
     public void dispatch(Envelope envelope) {
-        Consumer<Envelope> handler = handlers.get(MessageType.valueOf(envelope.getType()));
-        if (handler != null) {
-            handler.accept(envelope);
+        if (envelope == null || envelope.getType() == null) return;
+        try {
+            Consumer<Envelope> handler = handlers.get(MessageType.valueOf(envelope.getType()));
+            if (handler != null) {
+                handler.accept(envelope);
+            }
+        } catch (IllegalArgumentException ignored) {}
+    }
+
+    private void handleJoinAck(Envelope env) {
+        JoinAckPayload payload = JsonUtil.fromPayload(env.getPayload(), JoinAckPayload.class);
+        if (payload == null) return;
+
+        if (payload.getHistory() != null) {
+            for (Envelope msg : payload.getHistory()) {
+                messageDao.insert(msg);
+            }
+        }
+
+        if (joinCallback != null) {
+            joinCallback.onJoinAck(payload);
         }
     }
 
-    public void registerHandler(MessageType type, Consumer<Envelope> handler) {
-        handlers.put(type, handler);
+    private void handleUserJoined(Envelope env) {
+        UserEventPayload payload = JsonUtil.fromPayload(env.getPayload(), UserEventPayload.class);
+        if (payload == null || userEventCallback == null) return;
+        userEventCallback.onUserJoined(payload);
     }
 
-    private void handleSyncReq(Envelope env) {
-        syncService.handleSyncRequest(env);
-    }
-
-    private void handleSyncResp(Envelope env) {
-        syncService.handleSyncResponse(env);
+    private void handleUserLeft(Envelope env) {
+        UserEventPayload payload = JsonUtil.fromPayload(env.getPayload(), UserEventPayload.class);
+        if (payload == null || userEventCallback == null) return;
+        userEventCallback.onUserLeft(payload);
     }
 
     private void handleChatText(Envelope env) {
-        syncService.recordIncomingMessage(env);
+        messageDao.insert(env);
     }
 
     private void handleFileMeta(Envelope env) {
-        fileTransferService.handleFileMeta(env);
-        syncService.recordIncomingMessage(env);
+        if (fileTransferService != null) {
+            fileTransferService.handleFileMeta(env);
+        }
+        messageDao.insert(env);
     }
 
     private void handleFileChunk(Envelope env) {
-        fileTransferService.handleFileChunk(env);
+        if (fileTransferService != null) {
+            fileTransferService.handleFileChunk(env);
+        }
     }
 
     private void handleFileChunkAck(Envelope env) {
-        fileTransferService.handleFileChunkAck(env);
+        if (fileTransferService != null) {
+            fileTransferService.handleFileChunkAck(env);
+        }
     }
 
     private void handleHeartbeat(Envelope env) {

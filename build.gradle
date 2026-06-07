@@ -46,6 +46,8 @@ tasks.named('test') {
     useJUnitPlatform()
 }
 
-tasks.withType(JavaCompile).configureEach {
-    options.encoding = 'UTF-8'
+tasks.register('runServer', JavaExec) {
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.alpha.lanim.server.LanIMServer'
+    standardInput = System.in
 }

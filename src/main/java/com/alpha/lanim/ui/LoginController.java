@@ -1,5 +1,6 @@
 package com.alpha.lanim.ui;
 
+import com.alpha.lanim.util.Constants;
 import com.alpha.lanim.util.Validator;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -11,7 +12,7 @@ import javafx.stage.Stage;
 public class LoginController {
 
     public interface LoginCallback {
-        void onConnect(String nickname, String roomSecret, boolean useTls);
+        void onConnect(String nickname, String roomSecret, boolean useTls, String serverAddress);
     }
 
     public static Scene createScene(Stage stage, LoginCallback callback) {
@@ -28,6 +29,11 @@ public class LoginController {
         Separator sep = new Separator();
         sep.setMaxWidth(320);
 
+        Label serverLabel = new Label("Server Address:");
+        TextField serverField = new TextField();
+        serverField.setPromptText("localhost:" + Constants.DEFAULT_SERVER_PORT);
+        serverField.setMaxWidth(320);
+
         Label nicknameLabel = new Label("Nickname:");
         TextField nicknameField = new TextField();
         nicknameField.setPromptText("Enter your display name...");
@@ -42,7 +48,7 @@ public class LoginController {
         CheckBox tlsCheckbox = new CheckBox("Enable TLS encryption");
         tlsCheckbox.setSelected(true);
 
-        Button connectButton = new Button("Connect to Room");
+        Button connectButton = new Button("Connect to Server");
         connectButton.setPrefWidth(200);
         connectButton.setDefaultButton(true);
 
@@ -50,6 +56,7 @@ public class LoginController {
         statusLabel.setStyle("-fx-text-fill: red;");
 
         connectButton.setOnAction(e -> {
+            String serverAddress = serverField.getText().trim();
             String nickname = nicknameField.getText().trim();
             String roomSecret = roomField.getText().trim();
             boolean useTls = tlsCheckbox.isSelected();
@@ -62,23 +69,20 @@ public class LoginController {
             connectButton.setDisable(true);
             statusLabel.setStyle("-fx-text-fill: gray;");
             statusLabel.setText("Connecting...");
-            callback.onConnect(nickname, roomSecret, useTls);
+            callback.onConnect(nickname, roomSecret, useTls,
+                    serverAddress.isEmpty() ? null : serverAddress);
         });
 
         root.getChildren().addAll(titleLabel, subtitleLabel, sep,
+                serverLabel, serverField,
                 nicknameLabel, nicknameField,
                 roomLabel, roomField,
                 tlsCheckbox, connectButton, statusLabel);
 
-        Scene scene = new Scene(root, 400, 380);
+        Scene scene = new Scene(root, 400, 440);
         stage.setTitle("LANIM - Login");
         stage.setMinWidth(400);
-        stage.setMinHeight(380);
+        stage.setMinHeight(440);
         return scene;
-    }
-
-    public static void showError(Label statusLabel, String message) {
-        statusLabel.setStyle("-fx-text-fill: red;");
-        statusLabel.setText(message);
     }
 }
